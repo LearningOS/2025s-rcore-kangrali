@@ -35,7 +35,8 @@ RUN apt-get install -y \
         autoconf automake autotools-dev curl libmpc-dev libmpfr-dev libgmp-dev \
         gawk build-essential bison flex texinfo gperf libtool patchutils bc \
         zlib1g-dev libexpat-dev git \
-        ninja-build pkg-config libglib2.0-dev libpixman-1-dev libsdl2-dev
+        ninja-build pkg-config libglib2.0-dev libpixman-1-dev libsdl2-dev \
+        vim
 
 # 1.3. Build and install from source
 WORKDIR ${HOME}/qemu-${QEMU_VERSION}
@@ -61,6 +62,10 @@ ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH \
     RUST_VERSION=nightly
+
+ENV RUSTUP_DIST_SERVER=https://mirrors.ustc.edu.cn/rust-static \
+    RUSTUP_UPDATE_ROOT=https://mirrors.ustc.edu.cn/rust-static/rustup
+
 RUN set -eux; \
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o rustup-init; \
     chmod +x rustup-init; \
@@ -76,6 +81,13 @@ RUN rustup --version && \
 # 3. Build env for labs
 # See os1/Makefile `env:` for example.
 # This avoids having to wait for these steps each time using a new container.
+
+RUN echo "[source.crates-io]" > /usr/local/cargo/config.toml && \
+    echo "replace-with = 'ustc'" >> /usr/local/cargo/config.toml && \
+    echo "\n" >> /usr/local/cargo/config.toml && \
+    echo "[source.ustc]" >> /usr/local/cargo/config.toml && \
+    echo "registry = 'sparse+https://mirrors.ustc.edu.cn/crates.io-index/'" >> /usr/local/cargo/config.toml
+    
 RUN rustup target add riscv64gc-unknown-none-elf && \
     cargo install cargo-binutils --vers ~0.2 && \
     rustup component add rust-src && \
