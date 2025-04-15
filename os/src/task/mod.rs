@@ -39,12 +39,21 @@ pub struct TaskManager {
     inner: UPSafeCell<TaskManagerInner>,
 }
 
+/// Extra info for Tasks
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub struct TaskExtraInfo {
+    syscall_count: [usize; 5],
+}
+
 /// Inner of Task Manager
 pub struct TaskManagerInner {
     /// task list
     tasks: [TaskControlBlock; MAX_APP_NUM],
     /// id of current `Running` task
     current_task: usize,
+    /// aditional fields
+    tasks_info: [TaskExtraInfo; MAX_APP_NUM],
 }
 
 lazy_static! {
@@ -65,6 +74,9 @@ lazy_static! {
                 UPSafeCell::new(TaskManagerInner {
                     tasks,
                     current_task: 0,
+                    tasks_info: [TaskExtraInfo {
+                        syscall_count: [0; 5],
+                    }; MAX_APP_NUM],
                 })
             },
         }
@@ -135,6 +147,18 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    fn add_syscall_count(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks_info[current].syscall_count[syscall_id] += 1;
+    }
+
+    fn get_syscall_count(&self, syscall_id: usize) -> usize {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks_info[current].syscall_count[syscall_id]
+    }
 }
 
 /// Run the first task in task list.
@@ -168,4 +192,14 @@ pub fn suspend_current_and_run_next() {
 pub fn exit_current_and_run_next() {
     mark_current_exited();
     run_next_task();
+}
+
+/// Add syscall count for current task
+pub fn add_syscall_count(syscall_id: usize) {
+    TASK_MANAGER.add_syscall_count(syscall_id);
+}
+
+/// Get syscall count for current task
+pub fn get_syscall_count(syscall_id: usize) -> usize {
+    TASK_MANAGER.get_syscall_count(syscall_id)
 }
