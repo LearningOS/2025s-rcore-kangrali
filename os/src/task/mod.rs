@@ -17,12 +17,15 @@ mod task;
 use crate::loader::{get_app_data, get_num_app};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
+use alloc::collections::btree_map::BTreeMap;
 use alloc::vec::Vec;
 use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
 
+
 pub use context::TaskContext;
+use crate::mm::MapPermission;
 
 /// The task manager, where all the tasks are managed.
 ///
@@ -40,12 +43,18 @@ pub struct TaskManager {
     inner: UPSafeCell<TaskManagerInner>,
 }
 
+
+struct TaskExtraInfo {
+    syscall_count: BTreeMap<usize, usize>,
+}
+
 /// The task manager inner in 'UPSafeCell'
 struct TaskManagerInner {
     /// task list
     tasks: Vec<TaskControlBlock>,
     /// id of current `Running` task
     current_task: usize,
+    tasks_info: Vec<TaskExtraInfo>,
 }
 
 lazy_static! {
@@ -58,12 +67,15 @@ lazy_static! {
         for i in 0..num_app {
             tasks.push(TaskControlBlock::new(get_app_data(i), i));
         }
+        let mut infos: Vec<TaskExtraInfo> = Vec::new();
+        (0..num_app).for_each(|_| infos.push(TaskExtraInfo { syscall_count: BTreeMap::new()} ));
         TaskManager {
             num_app,
             inner: unsafe {
                 UPSafeCell::new(TaskManagerInner {
                     tasks,
                     current_task: 0,
+                    tasks_info: infos,
                 })
             },
         }
@@ -153,6 +165,44 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    /// Add syscall
+    fn add_syscall_count(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        let s = inner.tasks_info[cur].syscall_count.entry(syscall_id).or_insert(0);
+        *s += 1;
+    }
+
+    /// Get syscall
+    fn get_syscall_count(&self, syscall_id: usize) -> usize {
+        let inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks_info[cur].syscall_count.get(&syscall_id).copied().unwrap_or(0)
+    }
+
+    /// mmap syscall
+    fn call_mmap(&self, start: usize, len: usize, prot: usize) -> isize {
+        let mperm = (MapPermission::from_bits_truncate((prot << 1) as u8) & (MapPermission::R | MapPermission::W | MapPermission::X)) | MapPermission::U;
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        let task = &mut inner.tasks[cur];
+        if task.memory_set.insert_framed_area(start.into(), (start + len).into(), mperm).is_err() {
+            return -1
+        } 
+        0
+    }
+
+    /// munmap syscall
+    fn call_munmap(&self, start: usize, len: usize) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        let task = &mut inner.tasks[cur];
+        if task.memory_set.remove_framed_area(start.into(), (start + len).into()).is_err() {
+            return -1
+        } 
+        0
+    }
 }
 
 /// Run the first task in task list.
@@ -201,4 +251,24 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// Add syscall count
+pub fn add_syscall_count(syscall_id: usize) {
+    TASK_MANAGER.add_syscall_count(syscall_id);
+}
+
+/// Get syscall count
+pub fn get_syscall_count(syscall_id: usize) -> usize {
+    TASK_MANAGER.get_syscall_count(syscall_id)
+}
+
+/// mmap syscall
+pub fn call_mmap(start: usize, len: usize, prot: usize) -> isize {
+    TASK_MANAGER.call_mmap(start, len, prot)
+}
+
+/// munmap syscall
+pub fn call_munmap(start: usize, len: usize) -> isize {
+    TASK_MANAGER.call_munmap(start, len)
 }
