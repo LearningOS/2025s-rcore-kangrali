@@ -29,7 +29,6 @@ use lazy_static::*;
 pub use manager::{fetch_task, TaskManager};
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
-
 pub use id::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
 pub use manager::add_task;
 pub use processor::{
@@ -120,3 +119,13 @@ lazy_static! {
 pub fn add_initproc() {
     add_task(INITPROC.clone());
 }
+
+// /// mmap syscall
+// pub fn call_mmap(start: usize, len: usize, prot: usize) -> isize {
+//     TASK_MANAGER.call_mmap(start, len, prot)
+// }
+
+// /// munmap syscall
+// pub fn call_munmap(start: usize, len: usize) -> isize {
+//     TASK_MANAGER.call_munmap(start, len)
+// }

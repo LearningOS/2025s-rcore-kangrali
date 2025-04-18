@@ -80,7 +80,7 @@ pub fn kstack_alloc() -> KernelStack {
         kstack_bottom.into(),
         kstack_top.into(),
         MapPermission::R | MapPermission::W,
-    );
+    ).unwrap();
     KernelStack(kstack_id)
 }
 
@@ -90,7 +90,7 @@ impl Drop for KernelStack {
         let kernel_stack_bottom_va: VirtAddr = kernel_stack_bottom.into();
         KERNEL_SPACE
             .exclusive_access()
-            .remove_area_with_start_vpn(kernel_stack_bottom_va.into());
+            .remove_area_with_start_vpn(kernel_stack_bottom_va.into()).unwrap();
         KSTACK_ALLOCATOR.exclusive_access().dealloc(self.0);
     }
 }
