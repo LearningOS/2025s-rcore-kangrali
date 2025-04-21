@@ -6,10 +6,10 @@ use crate::{
     mm::{translated_refmut, translated_str, translated_byte_buffer, MapPermission},
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,
-        suspend_current_and_run_next, 
+        suspend_current_and_run_next
     },
 };
-use crate::config::PAGE_SIZE;
+use crate::config::{PAGE_SIZE, BIG_STRIDE};
 use crate::timer::get_time_us;
 
 #[repr(C)]
@@ -175,17 +175,39 @@ pub fn sys_sbrk(size: i32) -> isize {
 /// HINT: fork + exec =/= spawn
 pub fn sys_spawn(_path: *const u8) -> isize {
     trace!(
-        "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_spawn",
         current_task().unwrap().pid.0
     );
-    -1
+    let current_task = current_task().unwrap();
+    let path = translated_str(current_user_token(), _path);
+    if let Some(data) = get_app_data_by_name(path.as_str()) {
+        let task = current_task.spwan(data);
+        let new_pid = task.pid.0;
+        // modify trap context of new_task, because it returns immediately after switching
+        let trap_cx = task.inner_exclusive_access().get_trap_cx();
+        // we do not have to move to next instruction since we have done it before
+        // for child process, fork returns 0
+        trap_cx.x[10] = 0;
+        // add new task to scheduler
+        add_task(task);
+        new_pid as isize
+    } else {
+        -1
+    }
+
 }
 
 // YOUR JOB: Set task priority.
 pub fn sys_set_priority(_prio: isize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_set_priority",
         current_task().unwrap().pid.0
     );
-    -1
+    if _prio < 2 {
+        return -1;
+    }
+    let cur = current_task().unwrap();
+    let mut inner = cur.inner_exclusive_access();
+    inner.pass = BIG_STRIDE / (_prio as usize);
+    _prio
 }
