@@ -1,10 +1,11 @@
 use super::{
-    block_cache_sync_all, get_block_cache, BlockDevice, DirEntry, DiskInode, DiskInodeType,
+    block_cache_sync_all, get_block_cache, BlockDevice, DirEntry, DiskInode, DiskInodeType, 
     EasyFileSystem, DIRENT_SZ,
 };
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use log::trace;
 use spin::{Mutex, MutexGuard};
 /// Virtual filesystem layer over easy-fs
 pub struct Inode {
@@ -182,5 +183,115 @@ impl Inode {
             }
         });
         block_cache_sync_all();
+    }
+    /// Get inode id
+    pub fn get_inode_id(&self) -> u32 {
+        self.fs.lock().get_disk_inode_id(self.block_id as u32, self.block_offset)
+    }
+    /// Get file is file
+    pub fn is_file(&self) -> bool {
+        self.read_disk_inode(|d: &DiskInode| d.is_file())
+    }
+    /// Get file is dir
+    pub fn is_dir(&self) -> bool {
+        self.read_disk_inode(|d: &DiskInode| d.is_dir())
+    }
+    /// count inode nlinks num under a disk inode by inode id
+    pub fn count_inode_id(&self, inode_id: u32) -> u32 {
+        // assert it is a directory
+        let fs = self.fs.lock();
+        self.read_disk_inode(|disk_inode| {
+            assert!(disk_inode.is_dir());
+            let mut count = 0u32;
+            let file_count = (disk_inode.size as usize) / DIRENT_SZ;
+            let mut dirent = DirEntry::empty();
+            for i in 0..file_count {
+                assert_eq!(
+                    disk_inode.read_at(DIRENT_SZ * i, dirent.as_bytes_mut(), &self.block_device,),
+                    DIRENT_SZ,
+                );
+                if dirent.inode_id() == inode_id {
+                    count += 1;
+                }
+            }
+            count
+        })
+    }
+
+    /// Cancel nlink by name
+    pub fn cancel_nlink(&self, path: &str) -> Option<Arc<Inode>> {
+        let fs = self.fs.lock();
+        let op = |root_inode: &DiskInode| {
+            // assert it is a directory
+            assert!(root_inode.is_dir());
+            // has the file been created?
+            self.find_inode_id(path, root_inode)
+        };
+        let inode_id = self.read_disk_inode(op)?;
+        // mark delete nlink
+        self.modify_disk_inode(|root_inode| {
+            // mark delete file in the dirent
+            let file_count = (root_inode.size as usize) / DIRENT_SZ;
+            let mut dirent = DirEntry::empty();
+            for i in 0..file_count {
+                assert_eq!(
+                    root_inode.read_at(DIRENT_SZ * i, dirent.as_bytes_mut(), &self.block_device,),
+                    DIRENT_SZ,
+                );
+                if dirent.name() == path {
+                    root_inode.write_at(DIRENT_SZ * i, DirEntry::empty().as_bytes(), &self.block_device);
+                }
+            }
+        });
+        let (block_id, block_offset) = fs.get_disk_inode_pos(inode_id);
+        block_cache_sync_all();
+        // return inode
+        Some(Arc::new(Self::new(
+            block_id,
+            block_offset,
+            self.fs.clone(),
+            self.block_device.clone(),
+        )))
+        // release efs lock automatically by compiler
+    }
+
+    /// Create nlink by name
+    pub fn create_nlink(&self, old_path: &str, new_path: &str) -> Option<u32> {
+        let mut fs = self.fs.lock();
+        let op = |root_inode: &DiskInode| {
+            // assert it is a directory
+            assert!(root_inode.is_dir());
+            // has the file been created?
+            self.find_inode_id(new_path, root_inode)
+        };
+        if self.read_disk_inode(op).is_some() {
+            return None;
+        }
+        // create a new file
+        // alloc a inode with an indirect block
+        let op = |root_inode: &DiskInode| {
+            // assert it is a directory
+            assert!(root_inode.is_dir());
+            // has the file been created?
+            self.find_inode_id(old_path, root_inode)
+        };
+        let new_inode_id = self.read_disk_inode(op)?;
+        self.modify_disk_inode(|root_inode| {
+            // append file in the dirent
+            let file_count = (root_inode.size as usize) / DIRENT_SZ;
+            let new_size = (file_count + 1) * DIRENT_SZ;
+            // increase size
+            self.increase_size(new_size as u32, root_inode, &mut fs);
+            // write dirent
+            let dirent = DirEntry::new(new_path, new_inode_id);
+            root_inode.write_at(
+                file_count * DIRENT_SZ,
+                dirent.as_bytes(),
+                &self.block_device,
+            );
+        });
+        block_cache_sync_all();
+        Some(new_inode_id)
+        // release efs lock automatically by compiler
     }
 }

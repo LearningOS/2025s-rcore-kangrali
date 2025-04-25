@@ -3,6 +3,9 @@
 mod inode;
 mod stdio;
 
+use alloc::sync::Arc;
+use easy_fs::Inode;
+
 use crate::mm::UserBuffer;
 
 /// trait File for all file types
@@ -15,6 +18,9 @@ pub trait File: Send + Sync {
     fn read(&self, buf: UserBuffer) -> usize;
     /// write to the file from buf, return the number of bytes written
     fn write(&self, buf: UserBuffer) -> usize;
+    fn get_inode(&self) -> Option<Arc<Inode>> {
+        None
+    }
 }
 
 /// The stat of a inode
@@ -46,5 +52,5 @@ bitflags! {
     }
 }
 
-pub use inode::{list_apps, open_file, OSInode, OpenFlags};
+pub use inode::{list_apps, open_file, count_nlinks, create_nlinks, cancel_nlinks, OSInode, OpenFlags};
 pub use stdio::{Stdin, Stdout};

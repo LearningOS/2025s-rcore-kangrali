@@ -71,6 +71,26 @@ pub fn list_apps() {
     println!("**************/");
 }
 
+/// count nlinks of a inode
+pub fn count_nlinks(inode_id: u32) -> u32 {
+    ROOT_INODE.count_inode_id(inode_id)
+}
+
+/// create nlinks of a inode
+pub fn create_nlinks(old_name: &str, new_name: &str) -> Option<u32> {
+    ROOT_INODE.create_nlink(old_name, new_name)
+}
+
+/// cancel nlinks of a inode
+pub fn cancel_nlinks(path: &str) -> Option<u32> {
+    let inode = ROOT_INODE.cancel_nlink(path)?;
+    let inode_id = inode.get_inode_id();
+    if count_nlinks(inode_id) == 0 {
+        inode.clear();
+    }
+    Some(inode_id)
+}
+
 bitflags! {
     ///  The flags argument to the open() system call is constructed by ORing together zero or more of the following values:
     pub struct OpenFlags: u32 {
@@ -155,5 +175,9 @@ impl File for OSInode {
             total_write_size += write_size;
         }
         total_write_size
+    }
+    fn get_inode(&self) -> Option<Arc<Inode>> {
+        let inner = self.inner.exclusive_access();
+        Some(Arc::clone(&inner.inode))
     }
 }
