@@ -52,4 +52,11 @@ impl Semaphore {
             block_current_and_run_next();
         }
     }
+
+    /// Avaliable num
+    pub fn avaliable_num(&self) -> isize {
+        trace!("kernel: Semaphore::avaliable_num");
+        let inner = self.inner.exclusive_access();
+        inner.count
+    }
 }

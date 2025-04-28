@@ -2,6 +2,8 @@ use crate::sync::{Condvar, Mutex, MutexBlocking, MutexSpin, Semaphore};
 use crate::task::{block_current_and_run_next, current_process, current_task};
 use crate::timer::{add_timer, get_time_ms};
 use alloc::sync::Arc;
+use alloc::vec::Vec;
+
 /// sleep syscall
 pub fn sys_sleep(ms: usize) -> isize {
     trace!(
@@ -71,9 +73,46 @@ pub fn sys_mutex_lock(mutex_id: usize) -> isize {
     let process = current_process();
     let process_inner = process.inner_exclusive_access();
     let mutex = Arc::clone(process_inner.mutex_list[mutex_id].as_ref().unwrap());
+
+    // update needed
+    let task = current_task().unwrap();
+    let mut task_inner = task.inner_exclusive_access();
+    let current_tid = task_inner.res.as_ref().unwrap().tid;
+    let entry = task_inner.needed.entry(mutex_id).or_insert(0);
+    *entry += 1;
+    drop(task_inner);
+    if process_inner.enable_deadlock_detect {
+        let work: Vec<isize> = process_inner.mutex_list.iter().map(|item| item.as_ref().map(|m| m.avaliable_num()).unwrap_or(0)).collect();
+        let finish: Vec<bool> = process_inner.tasks.iter()
+                                 .map(|otcb| otcb.as_ref().map(|tcb| tcb.inner_exclusive_access().exit_code.is_some()).unwrap_or(true)).collect();
+        let valid_task = (0..finish.len()).filter(|&i| finish[i] == false).find(|&i| {
+            let task = process_inner.tasks[i].as_ref().unwrap();
+            let inner = task.inner_exclusive_access();
+            for (mutex_id, _) in process_inner.mutex_list.iter().enumerate() {
+                let needed = *inner.needed.get(&mutex_id).unwrap_or(&0) as isize;
+                let allocated = if i == current_tid {
+                    0
+                } else {
+                    *inner.allocation.get(&mutex_id).unwrap_or(&0) as isize
+                };
+                if work[mutex_id] + allocated < needed {
+                    return false;
+                }
+            }
+            true
+        });
+        if valid_task.is_none() {
+            return -0xDEAD;
+        }
+    }
     drop(process_inner);
     drop(process);
     mutex.lock();
+    let mut task_inner = task.inner_exclusive_access();
+    let entry = task_inner.needed.get_mut(&mutex_id).unwrap();
+    *entry -= 1;
+    let entry = task_inner.allocation.entry(mutex_id).or_insert(0);
+    *entry += 1;
     0
 }
 /// mutex unlock syscall
@@ -95,6 +134,10 @@ pub fn sys_mutex_unlock(mutex_id: usize) -> isize {
     drop(process_inner);
     drop(process);
     mutex.unlock();
+    let task = current_task().unwrap();
+    let mut task_inner = task.inner_exclusive_access();
+    let entry = task_inner.allocation.entry(mutex_id).or_insert(0);
+    *entry -= 1;
     0
 }
 /// semaphore create syscall
@@ -145,8 +188,12 @@ pub fn sys_semaphore_up(sem_id: usize) -> isize {
     let process = current_process();
     let process_inner = process.inner_exclusive_access();
     let sem = Arc::clone(process_inner.semaphore_list[sem_id].as_ref().unwrap());
+    let task = current_task().unwrap();
+    let mut task_inner = task.inner_exclusive_access();
     drop(process_inner);
     sem.up();
+    let entry = task_inner.allocation.entry(sem_id).or_insert(0);
+    *entry -= 1;
     0
 }
 /// semaphore down syscall
@@ -165,8 +212,49 @@ pub fn sys_semaphore_down(sem_id: usize) -> isize {
     let process = current_process();
     let process_inner = process.inner_exclusive_access();
     let sem = Arc::clone(process_inner.semaphore_list[sem_id].as_ref().unwrap());
+    let current_tid = current_task().unwrap().inner_exclusive_access().res.as_ref().unwrap().tid;
+    // update needed
+    let task = current_task().unwrap();
+    let mut task_inner = task.inner_exclusive_access();
+    let entry = task_inner.needed.entry(sem_id).or_insert(0);
+    *entry += 1;
+    drop(task_inner);
+    if process_inner.enable_deadlock_detect {
+        let work: Vec<isize> = process_inner.semaphore_list.iter().map(|item| item.as_ref().map(|m| m.avaliable_num()).unwrap_or(0)).collect();
+        let finish: Vec<bool> = process_inner.tasks.iter()
+                                .map(|otcb| otcb.as_ref().map(|tcb| tcb.inner_exclusive_access().exit_code.is_some()).unwrap_or(true)).collect();
+        // debug!("kernel: tid {} sem {} work[{:?}] finish[{:?}]", current_tid, sem_id, work, finish);
+        let valid_task = (0..finish.len()).filter(|&i| finish[i] == false).find(|&i| {
+            let task = process_inner.tasks[i].as_ref().unwrap();
+            let inner = task.inner_exclusive_access();
+
+            for (sem_id, _) in process_inner.semaphore_list.iter().enumerate() {  
+                let needed = *inner.needed.get(&sem_id).unwrap_or(&0) as isize;
+                let allocated = if i == current_tid {
+                    0
+                } else {
+                    *inner.allocation.get(&sem_id).unwrap_or(&0) as isize
+                };
+                // debug!("kernel: task {} work[{}] needed[{}]", i, work[sem_id], needed);
+                if work[sem_id] + allocated < needed as isize {
+                    return false;
+                }
+            }
+            // debug!("kernel: valid task {}", i);
+            true
+        });
+        if valid_task.is_none() {
+            debug!("kernel: tid {} sem {} failed", current_tid, sem_id);
+            return -0xDEAD;
+        }
+    }
     drop(process_inner);
     sem.down();
+    let mut task_inner = task.inner_exclusive_access();
+    let entry = task_inner.needed.get_mut(&sem_id).unwrap();
+    *entry -= 1;
+    let entry = task_inner.allocation.entry(sem_id).or_insert(0);
+    *entry += 1;
     0
 }
 /// condvar create syscall
@@ -246,6 +334,19 @@ pub fn sys_condvar_wait(condvar_id: usize, mutex_id: usize) -> isize {
 ///
 /// YOUR JOB: Implement deadlock detection, but might not all in this syscall
 pub fn sys_enable_deadlock_detect(_enabled: usize) -> isize {
-    trace!("kernel: sys_enable_deadlock_detect NOT IMPLEMENTED");
-    -1
+    trace!("kernel: sys_enable_deadlock_detect");
+    let process = current_process();
+    let mut process_inner = process.inner_exclusive_access(); 
+    match _enabled {
+        1 => {
+            process_inner.enable_deadlock_detect = true;
+        }
+        0 => {
+            process_inner.enable_deadlock_detect = false;
+        }
+        _ => {
+            return -1;
+        }
+    }
+    0
 }
